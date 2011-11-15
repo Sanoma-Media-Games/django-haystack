@@ -1,6 +1,8 @@
 import datetime
 import os
 import warnings
+import logging
+
 from optparse import make_option
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -17,6 +19,8 @@ except ImportError:
 
 DEFAULT_BATCH_SIZE = getattr(settings, 'HAYSTACK_BATCH_SIZE', 1000)
 DEFAULT_AGE = None
+
+logger = logging.getLogger(__name__)
 
 
 def worker(bits):
@@ -95,7 +99,7 @@ def build_queryset(index, model, age=DEFAULT_AGE, verbosity=1):
     return index_qs.filter(**extra_lookup_kwargs).order_by(model._meta.pk.name)
 
 
-def do_update(index, qs, start, end, total, verbosity=1):
+def do_update(index, qs, start, end, total, verbosity=1, catch_exceptions=False):
     # Get a clone of the QuerySet so that the cache doesn't bloat up
     # in memory. Useful when reindexing large amounts of data.
     small_cache_qs = qs.all()
@@ -107,7 +111,17 @@ def do_update(index, qs, start, end, total, verbosity=1):
         else:
             print "  indexed %s - %d of %d (by %s)." % (start+1, end, total, os.getpid())
 
-    index.backend.update(index, current_qs)
+    try:
+        index.backend.update(index, current_qs)
+    except Exception, e:
+        if catch_exceptions:
+            logger.error(
+                'Exception raised while updating index %s, records %d - %d: %s.  Skipping records...' % (
+                    index.__class__.__name__, start, end, e
+                )
+            )
+        else:
+            raise
 
     # Clear out the DB connections queries because it bloats up RAM.
     reset_queries()
@@ -155,6 +169,10 @@ class Command(BaseCommand):
             default=None, type='string',
             help='Comma seperated list of apps and/or app.models'
         ),
+        make_option('-c', '--catch-exceptions', action='store_true', dest='catch',
+            default=False,
+            help='Catch Exceptions while indexing and continue with the next group of items'
+        ),
     )
     option_list = BaseCommand.option_list + base_options
 
@@ -181,6 +199,7 @@ class Command(BaseCommand):
         self.remove = options.get('remove', False)
         self.workers = int(options.get('workers', 0))
         self.apps = options.get('apps', None)
+        self.catch_exceptions = options.get('catch')
 
         app_list = []
         if not self.apps:
@@ -216,7 +235,18 @@ class Command(BaseCommand):
         for app in app_list:
             app_label = app['app_label']
             model = app['model']
-            loaded_app = get_app(app_label)
+            try:
+                loaded_app = get_app(app_label)
+            except ImproperlyConfigured, e:
+                logger.warning('%s exception raised for app "%s"' % (
+                    e, app_label
+                ))
+
+                if self.catch_exceptions:
+                    logger.warning('Skipping app because "catch exceptions" is enabled')
+                    continue
+                else:
+                    raise
 
             if model == '*':
                 models = get_models(loaded_app)
@@ -264,7 +294,8 @@ class Command(BaseCommand):
                 end = min(start + self.batchsize, total)
 
                 if self.workers == 0:
-                    do_update(index, qs, start, end, total, self.verbosity)
+                    do_update(index, qs, start, end, total, self.verbosity,
+                              self.catch_exceptions)
                 else:
                     ghetto_queue.append(('do_update', model, start, end, total, self.site, self.age, self.verbosity))
 
