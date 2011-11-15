@@ -165,7 +165,7 @@ class Command(BaseCommand):
             default=0, type='int',
             help='Allows for the use multiple workers to parallelize indexing. Requires multiprocessing.'
         ),
-        make_option(None, '--apps', action='store', dest='apps',
+        make_option('-p', '--apps', action='store', dest='apps',
             default=None, type='string',
             help='Comma seperated list of apps and/or app.models'
         ),
