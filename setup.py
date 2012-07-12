@@ -4,10 +4,11 @@ from distutils.core import setup
 
 setup(
     name='django-haystack',
-    version='1.2.5',
+    version='1.2.7',
     description='Pluggable search for Django.',
     author='Daniel Lindsley',
     author_email='daniel@toastdriven.com',
+    long_description=open('README.rst', 'r').read(),
     url='http://haystacksearch.org/',
     packages=[
         'haystack',
