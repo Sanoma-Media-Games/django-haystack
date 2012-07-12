@@ -99,7 +99,7 @@ def build_queryset(index, model, age=DEFAULT_AGE, verbosity=1):
     return index_qs.filter(**extra_lookup_kwargs).order_by(model._meta.pk.name)
 
 
-def do_update(index, qs, start, end, total, verbosity=1, catch_exceptions=False):
+def do_update(index, qs, start, end, total, verbosity=1, catch_exceptions=False, **kwargs):
     # Get a clone of the QuerySet so that the cache doesn't bloat up
     # in memory. Useful when reindexing large amounts of data.
     small_cache_qs = qs.all()
@@ -112,7 +112,7 @@ def do_update(index, qs, start, end, total, verbosity=1, catch_exceptions=False)
             print "  indexed %s - %d of %d (by %s)." % (start+1, end, total, os.getpid())
 
     try:
-        index.backend.update(index, current_qs)
+        index.backend.update(index, current_qs, **kwargs)
     except Exception, e:
         if catch_exceptions:
             logger.error(
@@ -127,7 +127,7 @@ def do_update(index, qs, start, end, total, verbosity=1, catch_exceptions=False)
     reset_queries()
 
 
-def do_remove(index, model, pks_seen, start, upper_bound, verbosity=1):
+def do_remove(index, model, pks_seen, start, upper_bound, verbosity=1, **kwargs):
     # Fetch a list of results.
     # Can't do pk range, because id's are strings (thanks comments
     # & UUIDs!).
@@ -141,7 +141,7 @@ def do_remove(index, model, pks_seen, start, upper_bound, verbosity=1):
             if verbosity >= 2:
                 print "  removing %s." % result.pk
 
-            index.backend.remove(".".join([result.app_label, result.model_name, str(result.pk)]))
+            index.backend.remove(".".join([result.app_label, result.model_name, str(result.pk)]), **kwargs)
 
 
 class Command(BaseCommand):
@@ -173,6 +173,10 @@ class Command(BaseCommand):
             default=False,
             help='Catch Exceptions while indexing and continue with the next group of items'
         ),
+        make_option('-m', '--commit', action='store_true', dest='commit',
+            default=False,
+            help='Tells the backend to commit updates'
+        ),
     )
     option_list = BaseCommand.option_list + base_options
 
@@ -200,6 +204,7 @@ class Command(BaseCommand):
         self.workers = int(options.get('workers', 0))
         self.apps = options.get('apps', None)
         self.catch_exceptions = options.get('catch')
+        self.commit = options.get('commit')
 
         app_list = []
         if not self.apps:
@@ -295,9 +300,10 @@ class Command(BaseCommand):
 
                 if self.workers == 0:
                     do_update(index, qs, start, end, total, self.verbosity,
-                              self.catch_exceptions)
+                              self.catch_exceptions, commit=self.commit)
                 else:
-                    ghetto_queue.append(('do_update', model, start, end, total, self.site, self.age, self.verbosity))
+                    ghetto_queue.append(('do_update', model, start, end, total,
+                                         self.site, self.age, self.verbosity))
 
             if self.workers > 0:
                 pool = multiprocessing.Pool(self.workers)
@@ -318,9 +324,12 @@ class Command(BaseCommand):
                     upper_bound = start + self.batchsize
 
                     if self.workers == 0:
-                        do_remove(index, model, pks_seen, start, upper_bound)
+                        do_remove(index, model, pks_seen, start, upper_bound,
+                                  self.verbosity, commit=self.commit)
                     else:
-                        ghetto_queue.append(('do_remove', model, pks_seen, start, upper_bound, self.site, self.verbosity))
+                        ghetto_queue.append(('do_remove', model, pks_seen,
+                                             start, upper_bound, self.site,
+                                             self.verbosity))
 
                 if self.workers > 0:
                     pool = multiprocessing.Pool(self.workers)
